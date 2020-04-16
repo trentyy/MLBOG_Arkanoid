@@ -1,15 +1,13 @@
 """
 The template of the main script of the machine learning process
 """
-import pickle
-import numpy as np
+
 import games.arkanoid.communication as comm
 from games.arkanoid.communication import ( \
     SceneInfo, GameStatus, PlatformAction
 )
-import os.path as path
-
-
+import numpy as np
+from random import randint
 def ml_loop():
     """
     The main loop of the machine learning process
@@ -25,67 +23,78 @@ def ml_loop():
     # === Here is the execution order of the loop === #
     # 1. Put the initialization code here.
     ball_served = False
-    filename = path.join(path.dirname(__file__),"save/clf_KNN_BallAndDirection.pickle")
-    with open(filename, 'rb') as file:
-        clf = pickle.load(file)
-
+    AREA_WIDTH = 200
+    AREA_HIGHT = 500
+    PLATE_WIDTH = 40
+    PLATE_HWIDTH = int(PLATE_WIDTH / 2)
+    PLATE_QWIDTH = int(PLATE_HWIDTH / 2)
+    PLATE_YPOS = 400
+    BALL_R = 5
+    
+    v = np.zeros(2, dtype=int)
     # 2. Inform the game process that ml process is ready before start the loop.
     comm.ml_ready()
-    
-    s = [93,93]
-    def get_direction(ball_x,ball_y,ball_pre_x,ball_pre_y):
-        VectorX = ball_x - ball_pre_x
-        VectorY = ball_y - ball_pre_y
-        if(VectorX>=0 and VectorY>=0):
-            return 0
-        elif(VectorX>0 and VectorY<0):
-            return 1
-        elif(VectorX<0 and VectorY>0):
-            return 2
-        elif(VectorX<0 and VectorY<0):
-            return 3
-        
 
+    # a = True
     # 3. Start an endless loop.
     while True:
         # 3.1. Receive the scene information sent from the game process.
         scene_info = comm.get_scene_info()
-        feature = []
-        feature.append(scene_info.ball[0])
-        feature.append(scene_info.ball[1])
-        feature.append(scene_info.platform[0])
-        
-        feature.append(get_direction(feature[0],feature[1],s[0],s[1]))
-        s = [feature[0], feature[1]]
-        feature = np.array(feature)
-        feature = feature.reshape((-1,4))
+
+        # if a:
+        #     print(scene_info)
+        #     a = False
         # 3.2. If the game is over or passed, the game process will reset
         #      the scene and wait for ml process doing resetting job.
         if scene_info.status == GameStatus.GAME_OVER or \
             scene_info.status == GameStatus.GAME_PASS:
             # Do some stuff if needed
             ball_served = False
-
             # 3.2.1. Inform the game process that ml process is ready
             comm.ml_ready()
             continue
-
+        
         # 3.3. Put the code here to handle the scene information
+        pcur_pos = np.array(scene_info.platform)
+        
+        if ball_served:
+            # calcutlate ball's velocity
+            bpre_pos = bcur_pos
+            bcur_pos = np.array(scene_info.ball)
+            v = bcur_pos - bpre_pos
+            
+            # figure out where will the ball touch the plate
+            if v[0] or v[1]:
+                fall_time = (PLATE_YPOS - bcur_pos[1] - BALL_R) / v[1]
+                x_travel = fall_time * v[0]
+                fold_times = int((np.abs(bcur_pos[0] + x_travel)) / AREA_WIDTH)
+                
+                fall_x = int(np.abs(bcur_pos[0] + x_travel)) % AREA_WIDTH
+                if (fold_times % 2 == 0):
+                    fall_x = fall_x
+                else:
+                    fall_x = AREA_WIDTH - fall_x
 
+            else:
+                fall_x = AREA_WIDTH / 2
+            
         # 3.4. Send the instruction for this frame to the game process
         if not ball_served:
-            comm.send_instruction(scene_info.frame, PlatformAction.SERVE_TO_LEFT)
+            if randint(0,1) == 1:
+                comm.send_instruction(scene_info.frame, PlatformAction.SERVE_TO_LEFT)
+            else:
+                comm.send_instruction(scene_info.frame, PlatformAction.SERVE_TO_RIGHT)
             ball_served = True
-        else:
-                
-            y = clf.predict(feature)
-            
-            if y == 0:
-                comm.send_instruction(scene_info.frame, PlatformAction.NONE)
-                print('NONE')
-            elif y == 1:
-                comm.send_instruction(scene_info.frame, PlatformAction.MOVE_LEFT)
-                print('LEFT')
-            elif y == 2:
+            bcur_pos = scene_info.ball
+        elif (v[1] > 0):
+            # move plate pos base on estimate fall pos at plate's: left, middle, right 
+            if pcur_pos[0] + PLATE_QWIDTH < fall_x < pcur_pos[0] + PLATE_QWIDTH * 3:
+                if np.abs(bcur_pos[1] - pcur_pos[1]) <= 2 * BALL_R:
+                    if v[0] > 1: comm.send_instruction(scene_info.frame, PlatformAction.MOVE_RIGHT)
+                    else: comm.send_instruction(scene_info.frame, PlatformAction.MOVE_LEFT)
+                else:
+                    comm.send_instruction(scene_info.frame, PlatformAction.NONE)
+            elif pcur_pos[0] + PLATE_HWIDTH < fall_x:
                 comm.send_instruction(scene_info.frame, PlatformAction.MOVE_RIGHT)
-                print('RIGHT')
+            else:
+                comm.send_instruction(scene_info.frame, PlatformAction.MOVE_LEFT)
